@@ -1,4 +1,4 @@
-import { auth, signOut } from "@/auth";
+import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 import ChatClient from "./ChatClient";
 
@@ -14,5 +14,3 @@ export default async function ChatPage() {
     />
   );
 }
-
-export { signOut };
