@@ -4,7 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 
 const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
-const MODELS = ["gemini-3.8-flash-lite", "gemini-3.8-flash", "gemini-3.8-flash-preview-05-20"];
+const MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.8-flash"];
 
 export async function POST(req: NextRequest) {
   const session = await auth();
