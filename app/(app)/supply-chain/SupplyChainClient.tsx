@@ -47,6 +47,22 @@ interface MacroTick {
   up: boolean;
   source: string;
   asOf: string;
+  kind?: "live" | "snapshot";
+}
+
+interface GdeltArticle {
+  title: string;
+  url: string;
+  domain: string;
+  date: string;
+}
+
+interface GdeltSignals {
+  [nodeId: string]: {
+    articleCount: number;
+    articles: GdeltArticle[];
+    error?: string;
+  };
 }
 
 // ─── Seed data ────────────────────────────────────────────────
@@ -171,12 +187,12 @@ const EDGES: SCEdge[] = [
   { id: "e-sg-rot-semi",from: "singapore",  to: "rotterdam", commodity: "Chips (air)",   mode: "pipeline", chain: "semiconductors", baselineDays: 1 },
 ];
 
-const MACRO: MacroTick[] = [
-  { id: "brent",  label: "Brent Crude", value: "$73.40",  change: "−0.8%", up: false, source: "EIA",          asOf: "snapshot · 2025" },
-  { id: "dxy",    label: "DXY",         value: "104.2",   change: "+0.3%", up: true,  source: "Fed/ICE",       asOf: "snapshot · 2025" },
-  { id: "gold",   label: "Gold",        value: "$3,180",  change: "+1.2%", up: true,  source: "LBMA",          asOf: "snapshot · 2025" },
-  { id: "ust10y", label: "UST 10Y",     value: "4.52%",   change: "+4bp",  up: false, source: "US Treasury",   asOf: "snapshot · 2025" },
-  { id: "wci",    label: "WCI",         value: "$1,840",  change: "+3.1%", up: false, source: "Freightos",     asOf: "snapshot · 2025" },
+const MACRO_SEED: MacroTick[] = [
+  { id: "brent",  label: "Brent Crude", value: "$73.40",  change: "—",     up: false, source: "EIA",          asOf: "2025", kind: "snapshot" },
+  { id: "dxy",    label: "DXY",         value: "104.2",   change: "—",     up: true,  source: "FRED",         asOf: "2025", kind: "snapshot" },
+  { id: "gold",   label: "Gold",        value: "$3,180",  change: "—",     up: true,  source: "LBMA/FRED",    asOf: "2025", kind: "snapshot" },
+  { id: "ust10y", label: "UST 10Y",     value: "4.52%",   change: "—",     up: false, source: "FRED",         asOf: "2025", kind: "snapshot" },
+  { id: "wci",    label: "WCI",         value: "$4,351",  change: "—",     up: false, source: "Drewry",       asOf: "Oct 2026", kind: "snapshot" },
 ];
 
 // ─── Constants ────────────────────────────────────────────────
@@ -270,6 +286,9 @@ function MetricRow({ label, metric }: { label: string; metric: Metric }) {
 export default function SupplyChainClient() {
   const [activeChains, setActiveChains] = useState<string[]>(["crude-oil", "containers", "semiconductors"]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [macroTicks, setMacroTicks] = useState<MacroTick[]>(MACRO_SEED);
+  const [gdeltSignals, setGdeltSignals] = useState<GdeltSignals>({});
+  const [feedsConnected, setFeedsConnected] = useState(false);
   const mapDivRef = useRef<HTMLDivElement>(null);
   const leafletRef = useRef<any>(null);
   const markersRef = useRef<Record<string, any>>({});
@@ -291,6 +310,58 @@ export default function SupplyChainClient() {
       prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
     );
   };
+
+  // ── Fetch macro feed ────────────────────────────────────────
+  useEffect(() => {
+    async function loadMacro() {
+      try {
+        const res = await fetch("/api/feeds/macro");
+        if (!res.ok) return;
+        const data = await res.json();
+        const items = data.items as Record<string, {
+          value: string; unit: string | null; change: string | null;
+          up: boolean; source: string; asOf: string; kind: "live" | "snapshot";
+        }>;
+        const LABEL: Record<string, string> = {
+          brent: "Brent Crude", dxy: "DXY", gold: "Gold", ust10y: "UST 10Y", wci: "WCI",
+        };
+        setMacroTicks(MACRO_SEED.map(seed => {
+          const item = items[seed.id];
+          if (!item) return seed;
+          return {
+            id: seed.id,
+            label: LABEL[seed.id] ?? seed.label,
+            value: item.value,
+            change: item.change ?? "—",
+            up: item.up,
+            source: item.source,
+            asOf: item.asOf,
+            kind: item.kind,
+          };
+        }));
+        setFeedsConnected(true);
+      } catch {}
+    }
+    loadMacro();
+    const id = setInterval(loadMacro, 3600_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // ── Fetch GDELT feed ─────────────────────────────────────────
+  useEffect(() => {
+    async function loadGdelt() {
+      try {
+        const res = await fetch("/api/feeds/gdelt");
+        if (!res.ok) return;
+        const data = await res.json();
+        setGdeltSignals(data.signals ?? {});
+        setFeedsConnected(true);
+      } catch {}
+    }
+    loadGdelt();
+    const id = setInterval(loadGdelt, 900_000);
+    return () => clearInterval(id);
+  }, []);
 
   // ── Init Leaflet ────────────────────────────────────────────
   useEffect(() => {
@@ -333,7 +404,7 @@ export default function SupplyChainClient() {
   }, []);
 
   // ── Draw/update map elements ────────────────────────────────
-  const drawMap = useCallback(async () => {
+  const drawMap = useCallback(async () => {  // eslint-disable-line
     const map = leafletRef.current;
     if (!map) return;
 
@@ -392,20 +463,31 @@ export default function SupplyChainClient() {
       const statusCol = STATUS_COLOR[node.status];
       const size = node.type === "chokepoint" ? 14 : node.type === "hub" ? 13 : 11;
 
+      const gdelt = gdeltSignals[node.id];
+      const hasNews = gdelt && gdelt.articleCount > 0;
+      const iconSize2 = size + 12;
+
       const icon = L.divIcon({
         className: "",
-        html: `<div style="
-          width:${size}px;height:${size}px;
-          border-radius:${node.type === "manufacture" ? "2px" : node.type === "chokepoint" ? "0" : "50%"};
-          background:${statusCol};
-          border:2px solid ${isSelected ? "white" : "rgba(0,0,0,0.4)"};
-          box-shadow:${isSelected ? `0 0 0 2px ${statusCol}, 0 0 12px ${statusCol}` : `0 0 6px ${statusCol}88`};
-          opacity:${dimmed ? 0.2 : 1};
-          transition:all 0.2s;
-          clip-path:${node.type === "chokepoint" ? "polygon(50% 0%, 0% 100%, 100% 100%)" : "none"};
-        "></div>`,
-        iconSize: [size, size],
-        iconAnchor: [size / 2, size / 2],
+        html: `<div style="position:relative;width:${iconSize2}px;height:${iconSize2}px;display:flex;align-items:center;justify-content:center;">
+          ${hasNews ? `<div style="
+            position:absolute;inset:0;border-radius:50%;
+            border:1.5px solid rgba(248,113,113,0.7);
+            animation:gdelt-ping 1.8s ease-out infinite;
+          "></div>` : ""}
+          <div style="
+            width:${size}px;height:${size}px;
+            border-radius:${node.type === "manufacture" ? "2px" : node.type === "chokepoint" ? "0" : "50%"};
+            background:${statusCol};
+            border:2px solid ${isSelected ? "white" : "rgba(0,0,0,0.4)"};
+            box-shadow:${isSelected ? `0 0 0 2px ${statusCol}, 0 0 12px ${statusCol}` : `0 0 6px ${statusCol}88`};
+            opacity:${dimmed ? 0.2 : 1};
+            transition:all 0.2s;
+            clip-path:${node.type === "chokepoint" ? "polygon(50% 0%, 0% 100%, 100% 100%)" : "none"};
+          "></div>
+        </div>`,
+        iconSize: [iconSize2, iconSize2],
+        iconAnchor: [iconSize2 / 2, iconSize2 / 2],
       });
 
       const marker = L.marker([node.lat, node.lon], { icon })
@@ -423,7 +505,7 @@ export default function SupplyChainClient() {
 
       markersRef.current[node.id] = marker;
     });
-  }, [visibleNodes, visibleEdges, selectedId, connectedIds]);
+  }, [visibleNodes, visibleEdges, selectedId, connectedIds, gdeltSignals]);
 
   // Re-draw map when data or selection changes
   useEffect(() => {
@@ -475,8 +557,8 @@ export default function SupplyChainClient() {
           <span style={{ fontSize: 10, opacity: 0.2 }}>global market map · v1</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <KindBadge kind="snapshot" asOf="2025 seed data" />
-          <span style={{ fontSize: 9, opacity: 0.25 }}>live feeds: not connected</span>
+          <KindBadge kind={feedsConnected ? "live" : "snapshot"} asOf={feedsConnected ? null : "2025 seed data"} />
+          {!feedsConnected && <span style={{ fontSize: 9, opacity: 0.25 }}>live feeds: connecting…</span>}
         </div>
       </div>
 
@@ -611,6 +693,11 @@ export default function SupplyChainClient() {
             .leaflet-control-attribution { background: rgba(15,12,41,0.7) !important; color: rgba(255,255,255,0.25) !important; font-family: monospace; font-size: 9px; }
             .leaflet-control-attribution a { color: rgba(255,255,255,0.4) !important; }
             .sc-tooltip .leaflet-tooltip { background: transparent !important; border: none !important; box-shadow: none !important; padding: 0 !important; }
+            @keyframes gdelt-ping {
+              0%   { transform: scale(1);   opacity: 0.8; }
+              70%  { transform: scale(2.4); opacity: 0; }
+              100% { transform: scale(2.4); opacity: 0; }
+            }
           `}</style>
         </div>
 
@@ -699,6 +786,42 @@ export default function SupplyChainClient() {
                 </div>
               </div>
 
+              {/* GDELT news signals */}
+              {gdeltSignals[selectedNode.id] && gdeltSignals[selectedNode.id].articleCount > 0 && (
+                <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.07)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                    <div style={{ fontSize: 9, letterSpacing: "0.2em", color: "#f87171", opacity: 0.9 }}>GDELT SIGNALS</div>
+                    <span style={{ fontSize: 8, color: "#f87171", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)", padding: "1px 5px", borderRadius: 4 }}>
+                      {gdeltSignals[selectedNode.id].articleCount} articles · 48h
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {gdeltSignals[selectedNode.id].articles.slice(0, 4).map((article, i) => (
+                      <a
+                        key={i}
+                        href={article.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          display: "block", padding: "7px 10px", borderRadius: 7, textDecoration: "none",
+                          background: "rgba(248,113,113,0.05)", border: "1px solid rgba(248,113,113,0.15)",
+                          transition: "all 0.15s",
+                        }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(248,113,113,0.1)"; }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(248,113,113,0.05)"; }}
+                      >
+                        <div style={{ fontSize: 10, fontWeight: 600, color: "rgba(255,255,255,0.8)", lineHeight: 1.4, marginBottom: 3 }}>
+                          {article.title}
+                        </div>
+                        <div style={{ fontSize: 9, opacity: 0.35 }}>
+                          {article.domain}{article.date ? ` · ${article.date.slice(0, 8)}` : ""}
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Coordinates */}
               <div style={{ marginTop: 14, fontSize: 9, opacity: 0.2 }}>
                 {selectedNode.lat.toFixed(2)}°, {selectedNode.lon.toFixed(2)}°
@@ -727,7 +850,7 @@ export default function SupplyChainClient() {
         overflowX: "auto",
       }}>
         <span style={{ fontSize: 9, letterSpacing: "0.2em", color: "#f59e0b", opacity: 0.6, marginRight: 20, flexShrink: 0 }}>MACRO</span>
-        {MACRO.map((item, i) => (
+        {macroTicks.map((item, i) => (
           <div key={item.id} style={{
             display: "flex", alignItems: "center", gap: 20,
           }}>
@@ -741,17 +864,26 @@ export default function SupplyChainClient() {
               </div>
               <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 <span style={{ fontSize: 9, opacity: 0.35 }}>{item.label}</span>
-                <span style={{ fontSize: 8, opacity: 0.2 }}>· {item.asOf}</span>
+                {item.kind === "live"
+                  ? <span style={{ fontSize: 8, color: "#4ade80", opacity: 0.7 }}>· live · {item.asOf}</span>
+                  : <span style={{ fontSize: 8, opacity: 0.2 }}>· snapshot · {item.asOf}</span>
+                }
               </div>
             </div>
-            {i < MACRO.length - 1 && (
+            {i < macroTicks.length - 1 && (
               <div style={{ width: 1, height: 28, background: "rgba(255,255,255,0.07)", flexShrink: 0 }} />
             )}
           </div>
         ))}
         <div style={{ marginLeft: "auto", flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 9, opacity: 0.2 }}>AIS · GDELT · commodity feeds:</span>
-          <span style={{ fontSize: 9, color: "#6b7280", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.2)", padding: "1px 6px", borderRadius: 4 }}>NOT CONNECTED</span>
+          <span style={{ fontSize: 9, opacity: 0.2 }}>GDELT · macro feeds:</span>
+          {feedsConnected
+            ? <span style={{ fontSize: 9, color: "#4ade80", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.25)", padding: "1px 6px", borderRadius: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#4ade80", display: "inline-block" }} />
+                CONNECTED
+              </span>
+            : <span style={{ fontSize: 9, color: "#6b7280", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.2)", padding: "1px 6px", borderRadius: 4 }}>CONNECTING…</span>
+          }
         </div>
       </div>
     </div>
