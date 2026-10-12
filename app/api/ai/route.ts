@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { GoogleGenAI } from "@google/genai";
+import { sql } from "@/lib/db";
 
 const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
@@ -27,12 +28,19 @@ export async function POST(req: NextRequest) {
         });
         const text = response.text ?? "";
         console.log(`Gemini responded using model: ${model}`);
+
+        // Log to Postgres (non-blocking — failure doesn't affect response)
+        sql`
+          INSERT INTO chat_logs (user_email, prompt, response, model)
+          VALUES (${session.user?.email ?? "unknown"}, ${prompt.trim()}, ${text}, ${model})
+        `.catch(err => console.error("chat_logs insert failed:", err));
+
         return NextResponse.json({ text, model });
       } catch (err: unknown) {
         const status = (err as { status?: number }).status;
         console.warn(`Model ${model} failed (${status}):`, err);
         lastErr = err;
-        if (status !== 503 && status !== 404) break; // don't retry non-transient errors
+        if (status !== 503 && status !== 404) break;
       }
     }
     throw lastErr;
