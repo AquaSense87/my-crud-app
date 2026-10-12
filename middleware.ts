@@ -5,7 +5,7 @@ export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isAuthenticated = !!req.auth;
 
-  const isProtected = pathname.startsWith("/chat") || pathname.startsWith("/crud");
+  const isProtected = pathname.startsWith("/chat") || pathname.startsWith("/crud") || pathname.startsWith("/supply-chain");
   if (isProtected && !isAuthenticated) {
     const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("callbackUrl", req.url);
@@ -14,5 +14,5 @@ export default auth((req) => {
 });
 
 export const config = {
-  matcher: ["/chat/:path*", "/crud/:path*", "/crud"],
+  matcher: ["/chat/:path*", "/crud/:path*", "/crud", "/supply-chain/:path*", "/supply-chain"],
 };

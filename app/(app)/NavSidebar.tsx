@@ -13,8 +13,9 @@ interface Props {
 }
 
 const NAV_ITEMS = [
-  { href: "/crud", label: "MSG_STORE", tag: "sys/msg", icon: "⬡" },
-  { href: "/chat", label: "AI_CHAT", tag: "sys/ai", icon: "⬡" },
+  { href: "/crud",          label: "MSG_STORE",     tag: "sys/msg" },
+  { href: "/chat",          label: "AI_CHAT",        tag: "sys/ai" },
+  { href: "/supply-chain",  label: "SUPPLY_CHAIN",   tag: "sys/sc" },
 ];
 
 export default function NavSidebar({ user }: Props) {
