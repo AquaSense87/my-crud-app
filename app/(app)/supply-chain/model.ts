@@ -137,8 +137,6 @@ export function runSimulation(params: SimParams): SimResult {
     }
 
     delivered[chainId] = chainDelivered;
-
-    void chain;
   }
 
   // Build chain results
