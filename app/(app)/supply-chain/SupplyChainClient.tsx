@@ -288,6 +288,7 @@ export default function SupplyChainClient() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [macroTicks, setMacroTicks] = useState<MacroTick[]>(MACRO_SEED);
   const [gdeltSignals, setGdeltSignals] = useState<GdeltSignals>({});
+  const [nodeMetrics, setNodeMetrics] = useState<Record<string, Metric>>({});
   const [feedsConnected, setFeedsConnected] = useState(false);
   const mapDivRef = useRef<HTMLDivElement>(null);
   const leafletRef = useRef<any>(null);
@@ -347,6 +348,29 @@ export default function SupplyChainClient() {
     return () => clearInterval(id);
   }, []);
 
+  // ── Fetch node capacity feed ─────────────────────────────────
+  useEffect(() => {
+    async function loadNodes() {
+      try {
+        const res = await fetch("/api/feeds/nodes");
+        if (!res.ok) return;
+        const data = await res.json();
+        const raw = data.metrics as Record<string, {
+          value: number | null; unit: string | null; source: string; asOf: string | null; kind: "live" | "snapshot" | "absent";
+        }>;
+        const mapped: Record<string, Metric> = {};
+        for (const [id, m] of Object.entries(raw)) {
+          mapped[id] = { value: m.value, unit: m.unit, source: m.source, asOf: m.asOf, kind: m.kind };
+        }
+        setNodeMetrics(mapped);
+        setFeedsConnected(true);
+      } catch {}
+    }
+    loadNodes();
+    const id = setInterval(loadNodes, 21_600_000);
+    return () => clearInterval(id);
+  }, []);
+
   // ── Fetch GDELT feed ─────────────────────────────────────────
   useEffect(() => {
     async function loadGdelt() {
@@ -367,12 +391,12 @@ export default function SupplyChainClient() {
   useEffect(() => {
     if (!mapDivRef.current || leafletRef.current) return;
 
-    // Inject Leaflet CSS
+    // Inject Leaflet CSS (jsdelivr is more reliable than unpkg on Vercel)
     if (!document.getElementById("leaflet-css")) {
       const link = document.createElement("link");
       link.id = "leaflet-css";
       link.rel = "stylesheet";
-      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      link.href = "https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css";
       document.head.appendChild(link);
     }
 
@@ -385,9 +409,11 @@ export default function SupplyChainClient() {
         attributionControl: true,
       });
 
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors © <a href="https://carto.com/">CARTO</a>',
-        maxZoom: 18,
+      // OSM tiles with dark CSS filter — free, no key, reliable
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19,
+        crossOrigin: true,
       }).addTo(map);
 
       leafletRef.current = map;
@@ -688,6 +714,7 @@ export default function SupplyChainClient() {
           {/* Leaflet style override */}
           <style>{`
             .leaflet-container { background: #0f0c29; }
+            .leaflet-tile-pane { filter: invert(100%) hue-rotate(180deg) brightness(90%) contrast(88%) saturate(60%); }
             .leaflet-control-zoom a { background: rgba(20,17,50,0.9) !important; color: rgba(255,255,255,0.7) !important; border-color: rgba(255,255,255,0.1) !important; }
             .leaflet-control-zoom a:hover { background: rgba(40,35,80,0.95) !important; }
             .leaflet-control-attribution { background: rgba(15,12,41,0.7) !important; color: rgba(255,255,255,0.25) !important; font-family: monospace; font-size: 9px; }
@@ -748,8 +775,11 @@ export default function SupplyChainClient() {
                 <p style={{ fontSize: 11, lineHeight: 1.65, margin: 0, opacity: 0.75 }}>{selectedNode.explainer}</p>
               </div>
 
-              {/* Capacity metric */}
-              <MetricRow label="Capacity / Throughput" metric={selectedNode.capacity} />
+              {/* Capacity metric — prefer live nodeMetrics over seed */}
+              <MetricRow
+                label="Capacity / Throughput"
+                metric={nodeMetrics[selectedNode.id] ?? selectedNode.capacity}
+              />
 
               {/* Connected edges */}
               <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.07)" }}>
